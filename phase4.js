@@ -1,85 +1,92 @@
 import 'dotenv/config';
-import fs from 'fs';
 
-async function demanderIAAvecDocument(nom, url, key, model, contenuDoc, question) {
+const PROVIDERS = [
+    {
+        nom: 'Mistral',
+        url: 'https://api.mistral.ai/v1/chat/completions',
+        key: process.env.MISTRAL_API_KEY,
+        model: 'mistral-small-latest'
+    },
+    {
+        nom: 'Groq',
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        key: process.env.GROQ_API_KEY,
+        model: 'llama-3.3-70b-versatile'
+    },
+    {
+        nom: 'HuggingFace',
+        url: 'https://router.huggingface.co/v1/chat/completions',
+        key: process.env.HF_API_KEY,
+        model: 'meta-llama/Llama-3.1-8B-Instruct'
+    }
+];
+
+async function testProvider(p) {
+    if (!p.key) {
+        return { nom: p.nom, statut: 'MISSING' };
+    }
+
     const debut = Date.now();
-
     try {
-        const response = await fetch(url, {
+        const response = await fetch(p.url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${key}`
+                'Authorization': `Bearer ${p.key}`
             },
             body: JSON.stringify({
-                model: model,
-                messages: [
-                    {
-                        role: 'system',
-                        content: `Tu es un expert. Voici un document pour t'aider à répondre : \n\n ${contenuDoc}`
-                    },
-                    {
-                        role: 'user',
-                        content: `En te basant UNIQUEMENT sur le document fourni, réponds à ceci : ${question}`
-                    }
-                ],
-                temperature: 0.1
+                model: p.model,
+                messages: [{ role: 'user', content: 'ping' }],
+                max_tokens: 1
             })
         });
+        const duree = Date.now() - debut;
 
-        const data = await response.json();
-        const duree = (Date.now() - debut) / 1000;
-
-        console.log(`\n--- ${nom} (${model}) ---`);
-        console.log(`⏱️ Temps : ${duree}s`);
-        if (!data.choices) {
-            console.log(`⚠️ Réponse brute :`, JSON.stringify(data, null, 2));
-            return;
+        if (response.ok) return { nom: p.nom, statut: 'OK', duree };
+        if (response.status === 401 || response.status === 403) {
+            return { nom: p.nom, statut: 'AUTH', duree, code: response.status };
         }
-        console.log(`🤖 Réponse : ${data.choices[0].message.content}`);
+        return { nom: p.nom, statut: 'ERROR', duree, code: response.status };
     } catch (error) {
-        console.error(`❌ Erreur ${nom}:`, error.message);
+        return { nom: p.nom, statut: 'NETWORK', message: error.message };
     }
 }
 
-async function comparer(cheminFichier, question) {
-    console.log(`\n--- 📂 Lecture du document : ${cheminFichier} ---`);
-
-    let contenuDoc;
-    try {
-        contenuDoc = fs.readFileSync(cheminFichier, 'utf8');
-    } catch (error) {
-        console.error("❌ Erreur lecture fichier :", error.message);
-        console.log("Conseil : Crée un fichier 'info.txt' avec du texte dedans pour tester !");
-        return;
+function displayResult(result) {
+    const nom = result.nom.padEnd(14);
+    switch (result.statut) {
+        case 'OK':
+            console.log(`   ✅ ${nom}${result.duree}ms`);
+            break;
+        case 'AUTH':
+            console.log(`   ❌ ${nom}ERROR (auth ${result.code})`);
+            break;
+        case 'ERROR':
+            console.log(`   ❌ ${nom}ERROR (HTTP ${result.code})`);
+            break;
+        case 'NETWORK':
+            console.log(`   🌐 ${nom}ERROR réseau (${result.message})`);
+            break;
+        case 'MISSING':
+            console.log(`   ⚠️  ${nom}clé manquante dans .env`);
+            break;
     }
-
-    await demanderIAAvecDocument(
-        "MISTRAL",
-        "https://api.mistral.ai/v1/chat/completions",
-        process.env.MISTRAL_API_KEY,
-        "mistral-small-latest",
-        contenuDoc,
-        question
-    );
-
-    await demanderIAAvecDocument(
-        "GROQ",
-        "https://api.groq.com/openai/v1/chat/completions",
-        process.env.GROQ_API_KEY,
-        "llama-3.3-70b-versatile",
-        contenuDoc,
-        question
-    );
-
-    await demanderIAAvecDocument(
-        "HUGGING FACE",
-        "https://router.huggingface.co/v1/chat/completions",
-        process.env.HF_API_KEY,
-        "meta-llama/Llama-3.1-8B-Instruct",
-        contenuDoc,
-        question
-    );
 }
 
-comparer('info.txt', "Fais-moi un résumé de ce document.");
+async function main() {
+    console.log('🔍 Vérification des connexions API...\n');
+
+    const results = await Promise.all(PROVIDERS.map(testProvider));
+    results.forEach(displayResult);
+
+    const actives = results.filter(r => r.statut === 'OK').length;
+    console.log(`\n   ${actives}/${PROVIDERS.length} connexions actives\n`);
+
+    if (actives === PROVIDERS.length) {
+        console.log('Tout est vert. Vous êtes prêts pour la suite !');
+    } else {
+        console.log('Certaines connexions ont échoué. Corrige les erreurs ci-dessus.');
+    }
+}
+
+main();
